@@ -1,8 +1,8 @@
 # `iso7816_tx`
 
-> Implement **ISO7816** Smart Card **T=0** and **T=1** Transmission protocols
+> Implement **ISO7816** Smart Card **T=1** Transmission protocol
 
-The T=0 and T=1 protocols are commonly called the ISO protocols. They are primarily
+The T=1 protocol are commonly called the ISO protocols. They are primarily
 based on the provisions of the ISO/IEC 7816 family of standards
 
 ## License
