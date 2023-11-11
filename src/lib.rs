@@ -10,7 +10,8 @@
 //! ```
 //! use iso7816_tx::TransmissionBuilder;
 //!
-//! let mut t = TransmissionBuilder::new().build();
+//! let mut t = TransmissionBuilder::<(), ()>::new()
+//!     .build();
 //!
 //! t.init().expect("Failed to init");
 //! t.reset().expect("Failed to reset");
@@ -24,6 +25,9 @@
 
 #![no_std]
 
+type InitCb<T, E> = fn() -> Result<Option<T>, E>;
+type ReleaseCb<T, E> = fn(Option<&T>) -> Result<(), E>;
+
 /// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
 const ATR_SIZE: usize = 33;
 
@@ -31,57 +35,126 @@ const ATR_SIZE: usize = 33;
 const CAPDU_MIN: usize = 4;
 
 /// Main ISO7816 Transmission API structure
-pub struct Transmission {
+pub struct Transmission<T, E> {
     /// Answer To Reset
     atr: [u8; ATR_SIZE],
+
+    /// Smart Card communication interface context
+    interface: Option<T>,
+
+    /// Connection interface initialization callback
+    init_cb: InitCb<T, E>,
+
+    /// Connection interface release callback
+    release_cb: ReleaseCb<T, E>,
 }
 
-impl Transmission {
+impl<T, E> Transmission<T, E> {
     /// Initialize Transmission context
-    pub fn init(&mut self) -> Result<(), Error> {
+    pub fn init(&mut self) -> Result<(), Error<E>> {
+        self.interface = (self.init_cb)().map_err(Error::InitCbErr)?;
+
         Ok(())
     }
 
     /// Reset Transmission protocol states
-    pub fn reset(&mut self) -> Result<(), Error> {
+    pub fn reset(&mut self) -> Result<(), Error<E>> {
         Ok(())
     }
 
     /// Get Answer To Reset (ATR)
-    pub fn atr(&mut self) -> Result<&[u8], Error> {
+    pub fn atr(&mut self) -> Result<&[u8], Error<E>> {
         Ok(&self.atr)
     }
 
     /// Transmit APDU data and get the response
-    pub fn transmit(&mut self, capdu: &[u8]) -> Result<&[u8], Error> {
+    pub fn transmit(&mut self, capdu: &[u8]) -> Result<&[u8], Error<E>> {
         if capdu.len() < CAPDU_MIN {
             return Err(Error::CApduLen(capdu.len()));
         }
 
         Ok(&[0x90, 0x00])
     }
+
+    /// Release Transmission context
+    pub fn release(&mut self) -> Result<(), Error<E>> {
+        (self.release_cb)(self.interface.as_ref()).map_err(Error::ReleaseCbErr)?;
+        self.interface = None;
+
+        Ok(())
+    }
+}
+
+impl<T, E> Drop for Transmission<T, E> {
+    fn drop(&mut self) {
+        self.release().unwrap_or(())
+    }
 }
 
 /// ISO7816 Transmission context Builder
-pub struct TransmissionBuilder {}
+pub struct TransmissionBuilder<T, E> {
+    init_cb: InitCb<T, E>,
+    release_cb: ReleaseCb<T, E>,
+}
 
-impl TransmissionBuilder {
+impl<T, E> TransmissionBuilder<T, E> {
     /// Create new TransmissionBuilder structure
-    pub fn new() -> TransmissionBuilder {
-        TransmissionBuilder {}
+    pub fn new() -> TransmissionBuilder<T, E> {
+        TransmissionBuilder {
+            init_cb: DefaultCb::init,
+            release_cb: DefaultCb::release,
+        }
+    }
+
+    /// Set connection interface initialization callback
+    pub fn set_init_cb(mut self, cb: InitCb<T, E>) -> TransmissionBuilder<T, E> {
+        self.init_cb = cb;
+
+        self
+    }
+
+    /// Set connection interface release callback
+    pub fn set_release_cb(mut self, cb: ReleaseCb<T, E>) -> TransmissionBuilder<T, E> {
+        self.release_cb = cb;
+
+        self
     }
 
     /// Build Transmission structure from setuped TransmissionBuilder
-    pub fn build(self) -> Transmission {
+    pub fn build(self) -> Transmission<T, E> {
         Transmission {
             atr: [0u8; ATR_SIZE],
+            interface: None,
+            init_cb: self.init_cb,
+            release_cb: self.release_cb,
         }
+    }
+}
+
+/// Default callback implementations
+struct DefaultCb {}
+
+impl DefaultCb {
+    /// Connection interface initialization default callback
+    fn init<T, E>() -> Result<Option<T>, E> {
+        Ok(None)
+    }
+
+    /// Connection interface release default callback
+    fn release<T, E>(_interface: Option<&T>) -> Result<(), E> {
+        Ok(())
     }
 }
 
 /// ISO7816 Transmission errors
 #[derive(Debug, PartialEq)]
-pub enum Error {
+pub enum Error<E> {
     /// Incorrect APDU command length
     CApduLen(usize),
+
+    /// Connection interface initialization callback error
+    InitCbErr(E),
+
+    /// Connection interface release callback error
+    ReleaseCbErr(E),
 }
