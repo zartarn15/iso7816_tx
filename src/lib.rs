@@ -26,7 +26,7 @@
 #![no_std]
 
 type InitCb<T, E> = fn() -> Result<Option<T>, E>;
-type ReleaseCb<T, E> = fn(Option<&T>) -> Result<(), E>;
+type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
 
 /// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
 const ATR_SIZE: usize = 33;
@@ -43,16 +43,19 @@ pub struct Transmission<T, E> {
     interface: Option<T>,
 
     /// Connection interface initialization callback
-    init_cb: InitCb<T, E>,
+    init_cb: Option<InitCb<T, E>>,
 
     /// Connection interface release callback
-    release_cb: ReleaseCb<T, E>,
+    release_cb: Option<ReleaseCb<T, E>>,
 }
 
 impl<T, E> Transmission<T, E> {
     /// Initialize Transmission context
     pub fn init(&mut self) -> Result<(), Error<E>> {
-        self.interface = (self.init_cb)().map_err(Error::InitCbErr)?;
+        self.interface = match self.init_cb {
+            Some(cb) => cb().map_err(Error::InitCbErr)?,
+            None => None,
+        };
 
         Ok(())
     }
@@ -78,8 +81,10 @@ impl<T, E> Transmission<T, E> {
 
     /// Release Transmission context
     pub fn release(&mut self) -> Result<(), Error<E>> {
-        (self.release_cb)(self.interface.as_ref()).map_err(Error::ReleaseCbErr)?;
-        self.interface = None;
+        self.interface = match self.release_cb {
+            Some(cb) => cb(self.interface.as_ref()).map_err(Error::ReleaseCbErr)?,
+            None => None,
+        };
 
         Ok(())
     }
@@ -93,29 +98,29 @@ impl<T, E> Drop for Transmission<T, E> {
 
 /// ISO7816 Transmission context Builder
 pub struct TransmissionBuilder<T, E> {
-    init_cb: InitCb<T, E>,
-    release_cb: ReleaseCb<T, E>,
+    init_cb: Option<InitCb<T, E>>,
+    release_cb: Option<ReleaseCb<T, E>>,
 }
 
 impl<T, E> TransmissionBuilder<T, E> {
     /// Create new TransmissionBuilder structure
     pub fn new() -> TransmissionBuilder<T, E> {
         TransmissionBuilder {
-            init_cb: DefaultCb::init,
-            release_cb: DefaultCb::release,
+            init_cb: None,
+            release_cb: None,
         }
     }
 
     /// Set connection interface initialization callback
     pub fn set_init_cb(mut self, cb: InitCb<T, E>) -> TransmissionBuilder<T, E> {
-        self.init_cb = cb;
+        self.init_cb = Some(cb);
 
         self
     }
 
     /// Set connection interface release callback
     pub fn set_release_cb(mut self, cb: ReleaseCb<T, E>) -> TransmissionBuilder<T, E> {
-        self.release_cb = cb;
+        self.release_cb = Some(cb);
 
         self
     }
@@ -128,21 +133,6 @@ impl<T, E> TransmissionBuilder<T, E> {
             init_cb: self.init_cb,
             release_cb: self.release_cb,
         }
-    }
-}
-
-/// Default callback implementations
-struct DefaultCb {}
-
-impl DefaultCb {
-    /// Connection interface initialization default callback
-    fn init<T, E>() -> Result<Option<T>, E> {
-        Ok(None)
-    }
-
-    /// Connection interface release default callback
-    fn release<T, E>(_interface: Option<&T>) -> Result<(), E> {
-        Ok(())
     }
 }
 
