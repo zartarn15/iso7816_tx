@@ -27,6 +27,7 @@
 
 type InitCb<T, E> = fn() -> Result<Option<T>, E>;
 type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
+type ResetCb<T, E> = fn(Option<&T>) -> Result<(), E>;
 
 /// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
 const ATR_SIZE: usize = 33;
@@ -47,6 +48,9 @@ pub struct Transmission<T, E> {
 
     /// Connection interface release callback
     release_cb: Option<ReleaseCb<T, E>>,
+
+    /// Connection interface reset callback
+    reset_cb: Option<ResetCb<T, E>>,
 }
 
 impl<T, E> Transmission<T, E> {
@@ -62,6 +66,10 @@ impl<T, E> Transmission<T, E> {
 
     /// Reset Transmission protocol states
     pub fn reset(&mut self) -> Result<(), Error<E>> {
+        if let Some(cb) = self.reset_cb {
+            cb(self.interface.as_ref()).map_err(Error::ResetCbErr)?
+        }
+
         Ok(())
     }
 
@@ -100,6 +108,7 @@ impl<T, E> Drop for Transmission<T, E> {
 pub struct TransmissionBuilder<T, E> {
     init_cb: Option<InitCb<T, E>>,
     release_cb: Option<ReleaseCb<T, E>>,
+    reset_cb: Option<ResetCb<T, E>>,
 }
 
 impl<T, E> TransmissionBuilder<T, E> {
@@ -108,6 +117,7 @@ impl<T, E> TransmissionBuilder<T, E> {
         TransmissionBuilder {
             init_cb: None,
             release_cb: None,
+            reset_cb: None,
         }
     }
 
@@ -125,6 +135,13 @@ impl<T, E> TransmissionBuilder<T, E> {
         self
     }
 
+    /// Set connection interface reset callback
+    pub fn set_reset_cb(mut self, cb: ResetCb<T, E>) -> TransmissionBuilder<T, E> {
+        self.reset_cb = Some(cb);
+
+        self
+    }
+
     /// Build Transmission structure from setuped TransmissionBuilder
     pub fn build(self) -> Transmission<T, E> {
         Transmission {
@@ -132,6 +149,7 @@ impl<T, E> TransmissionBuilder<T, E> {
             interface: None,
             init_cb: self.init_cb,
             release_cb: self.release_cb,
+            reset_cb: self.reset_cb,
         }
     }
 }
@@ -153,4 +171,7 @@ pub enum Error<E> {
 
     /// Connection interface release callback error
     ReleaseCbErr(E),
+
+    /// Connection interface reset callback error
+    ResetCbErr(E),
 }
