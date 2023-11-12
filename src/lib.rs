@@ -136,6 +136,12 @@ impl<T, E> TransmissionBuilder<T, E> {
     }
 }
 
+impl<T, E> Default for TransmissionBuilder<T, E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// ISO7816 Transmission errors
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
