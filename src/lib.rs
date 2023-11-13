@@ -33,6 +33,8 @@ use crate::proto::T1Proto;
 type InitCb<T, E> = fn() -> Result<Option<T>, E>;
 type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
 type ResetCb<T, E> = fn(Option<&T>) -> Result<(), E>;
+type ReadCb<T, E> = fn(Option<&T>, &mut [u8]) -> Result<usize, E>;
+type WriteCb<T, E> = fn(Option<&T>, &[u8]) -> Result<usize, E>;
 
 /// Main ISO7816 Transmission API structure
 pub struct Transmission<'a, T, E> {
@@ -50,6 +52,12 @@ pub struct Transmission<'a, T, E> {
 
     /// Connection interface reset callback
     reset_cb: Option<ResetCb<T, E>>,
+
+    /// Connection interface read callback
+    read_cb: Option<ReadCb<T, E>>,
+
+    /// Connection interface write callback
+    write_cb: Option<WriteCb<T, E>>,
 
     /// NAD byte for Smart Card
     card_nad: Option<u8>,
@@ -116,6 +124,8 @@ pub struct TransmissionBuilder<T, E> {
     init_cb: Option<InitCb<T, E>>,
     release_cb: Option<ReleaseCb<T, E>>,
     reset_cb: Option<ResetCb<T, E>>,
+    read_cb: Option<ReadCb<T, E>>,
+    write_cb: Option<WriteCb<T, E>>,
     card_nad: Option<u8>,
     dev_nad: Option<u8>,
 }
@@ -127,6 +137,8 @@ impl<'a, T, E> TransmissionBuilder<T, E> {
             init_cb: None,
             release_cb: None,
             reset_cb: None,
+            read_cb: None,
+            write_cb: None,
             card_nad: None,
             dev_nad: None,
         }
@@ -153,6 +165,20 @@ impl<'a, T, E> TransmissionBuilder<T, E> {
         self
     }
 
+    /// Set connection interface read callback
+    pub fn set_read_cb(mut self, cb: ReadCb<T, E>) -> Self {
+        self.read_cb = Some(cb);
+
+        self
+    }
+
+    /// Set connection interface write callback
+    pub fn set_write_cb(mut self, cb: WriteCb<T, E>) -> Self {
+        self.write_cb = Some(cb);
+
+        self
+    }
+
     /// Set NAD bytes for Smart Card and Device
     pub fn set_nad(mut self, card_nad: u8, dev_nad: u8) -> Self {
         self.card_nad = Some(card_nad);
@@ -169,6 +195,8 @@ impl<'a, T, E> TransmissionBuilder<T, E> {
             init_cb: self.init_cb,
             release_cb: self.release_cb,
             reset_cb: self.reset_cb,
+            read_cb: self.read_cb,
+            write_cb: self.write_cb,
             card_nad: self.card_nad,
             dev_nad: self.dev_nad,
         }
