@@ -19,7 +19,8 @@
 //! let atr = t.atr().expect("Failed to get ATR");
 //!
 //! let capdu = [0x80, 0xca, 0x9f, 0x7f];
-//! let rapdu = t.transmit(&capdu).expect("Failed to transmit");
+//! let mut rapdu = [0u8, 258];
+//! let rapdu = t.transmit(&capdu, &mut rapdu).expect("Failed to transmit");
 //!
 //! ```
 
@@ -34,9 +35,9 @@ type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
 type ResetCb<T, E> = fn(Option<&T>) -> Result<(), E>;
 
 /// Main ISO7816 Transmission API structure
-pub struct Transmission<T, E> {
+pub struct Transmission<'a, T, E> {
     /// ISO/IEC 7816 T=1 transmission protocol context
-    t1: T1Proto,
+    t1: T1Proto<'a>,
 
     /// Smart Card communication interface context
     interface: Option<T>,
@@ -49,9 +50,15 @@ pub struct Transmission<T, E> {
 
     /// Connection interface reset callback
     reset_cb: Option<ResetCb<T, E>>,
+
+    /// NAD byte for Smart Card
+    card_nad: Option<u8>,
+
+    /// NAD byte for device
+    dev_nad: Option<u8>,
 }
 
-impl<T, E> Transmission<T, E> {
+impl<'a, T, E> Transmission<'a, T, E> {
     /// Initialize Transmission context
     pub fn init(&mut self) -> Result<(), Error<E>> {
         self.interface = match self.init_cb {
@@ -59,15 +66,21 @@ impl<T, E> Transmission<T, E> {
             None => None,
         };
 
+        let card_nad = self.card_nad.ok_or(Error::NadNotSet)?;
+        let dev_nad = self.dev_nad.ok_or(Error::NadNotSet)?;
+        self.t1.set_nad(card_nad, dev_nad);
+
         Ok(())
     }
 
     /// Reset Transmission protocol states
     pub fn reset(&mut self) -> Result<(), Error<E>> {
+        // Cold reset
         if let Some(cb) = self.reset_cb {
             cb(self.interface.as_ref()).map_err(Error::ResetCbErr)?
         }
 
+        // Soft reset
         self.t1.reset().map_err(Error::T1)
     }
 
@@ -77,8 +90,8 @@ impl<T, E> Transmission<T, E> {
     }
 
     /// Transmit APDU data and get the response
-    pub fn transmit(&mut self, capdu: &[u8]) -> Result<&[u8], Error<E>> {
-        self.t1.transmit(capdu).map_err(Error::T1)
+    pub fn transmit(&mut self, capdu: &[u8], rapdu: &mut [u8]) -> Result<(), Error<E>> {
+        self.t1.transmit(capdu, rapdu).map_err(Error::T1)
     }
 
     /// Release Transmission context
@@ -92,7 +105,7 @@ impl<T, E> Transmission<T, E> {
     }
 }
 
-impl<T, E> Drop for Transmission<T, E> {
+impl<'a, T, E> Drop for Transmission<'a, T, E> {
     fn drop(&mut self) {
         self.release().unwrap_or(())
     }
@@ -103,15 +116,19 @@ pub struct TransmissionBuilder<T, E> {
     init_cb: Option<InitCb<T, E>>,
     release_cb: Option<ReleaseCb<T, E>>,
     reset_cb: Option<ResetCb<T, E>>,
+    card_nad: Option<u8>,
+    dev_nad: Option<u8>,
 }
 
-impl<T, E> TransmissionBuilder<T, E> {
+impl<'a, T, E> TransmissionBuilder<T, E> {
     /// Create new TransmissionBuilder structure
     pub fn new() -> Self {
         Self {
             init_cb: None,
             release_cb: None,
             reset_cb: None,
+            card_nad: None,
+            dev_nad: None,
         }
     }
 
@@ -136,14 +153,24 @@ impl<T, E> TransmissionBuilder<T, E> {
         self
     }
 
+    /// Set NAD bytes for Smart Card and Device
+    pub fn set_nad(mut self, card_nad: u8, dev_nad: u8) -> Self {
+        self.card_nad = Some(card_nad);
+        self.dev_nad = Some(dev_nad);
+
+        self
+    }
+
     /// Build Transmission structure from setuped TransmissionBuilder
-    pub fn build(self) -> Transmission<T, E> {
+    pub fn build(self) -> Transmission<'a, T, E> {
         Transmission {
-            t1: T1Proto::new(),
+            t1: T1Proto::default(),
             interface: None,
             init_cb: self.init_cb,
             release_cb: self.release_cb,
             reset_cb: self.reset_cb,
+            card_nad: self.card_nad,
+            dev_nad: self.dev_nad,
         }
     }
 }
@@ -168,4 +195,7 @@ pub enum Error<E> {
 
     /// Connection interface reset callback error
     ResetCbErr(E),
+
+    /// NAD byte is not set
+    NadNotSet,
 }
