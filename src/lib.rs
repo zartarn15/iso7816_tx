@@ -25,20 +25,18 @@
 
 #![no_std]
 
+mod proto;
+
+use crate::proto::T1Proto;
+
 type InitCb<T, E> = fn() -> Result<Option<T>, E>;
 type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
 type ResetCb<T, E> = fn(Option<&T>) -> Result<(), E>;
 
-/// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
-const ATR_SIZE: usize = 33;
-
-/// Minimum length for an APDU command
-const CAPDU_MIN: usize = 4;
-
 /// Main ISO7816 Transmission API structure
 pub struct Transmission<T, E> {
-    /// Answer To Reset
-    atr: [u8; ATR_SIZE],
+    /// ISO/IEC 7816 T=1 transmission protocol context
+    t1: T1Proto,
 
     /// Smart Card communication interface context
     interface: Option<T>,
@@ -70,21 +68,17 @@ impl<T, E> Transmission<T, E> {
             cb(self.interface.as_ref()).map_err(Error::ResetCbErr)?
         }
 
-        Ok(())
+        self.t1.reset().map_err(Error::T1)
     }
 
     /// Get Answer To Reset (ATR)
     pub fn atr(&mut self) -> Result<&[u8], Error<E>> {
-        Ok(&self.atr)
+        self.t1.atr().map_err(Error::T1)
     }
 
     /// Transmit APDU data and get the response
     pub fn transmit(&mut self, capdu: &[u8]) -> Result<&[u8], Error<E>> {
-        if capdu.len() < CAPDU_MIN {
-            return Err(Error::CApduLen(capdu.len()));
-        }
-
-        Ok(&[0x90, 0x00])
+        self.t1.transmit(capdu).map_err(Error::T1)
     }
 
     /// Release Transmission context
@@ -113,8 +107,8 @@ pub struct TransmissionBuilder<T, E> {
 
 impl<T, E> TransmissionBuilder<T, E> {
     /// Create new TransmissionBuilder structure
-    pub fn new() -> TransmissionBuilder<T, E> {
-        TransmissionBuilder {
+    pub fn new() -> Self {
+        Self {
             init_cb: None,
             release_cb: None,
             reset_cb: None,
@@ -122,21 +116,21 @@ impl<T, E> TransmissionBuilder<T, E> {
     }
 
     /// Set connection interface initialization callback
-    pub fn set_init_cb(mut self, cb: InitCb<T, E>) -> TransmissionBuilder<T, E> {
+    pub fn set_init_cb(mut self, cb: InitCb<T, E>) -> Self {
         self.init_cb = Some(cb);
 
         self
     }
 
     /// Set connection interface release callback
-    pub fn set_release_cb(mut self, cb: ReleaseCb<T, E>) -> TransmissionBuilder<T, E> {
+    pub fn set_release_cb(mut self, cb: ReleaseCb<T, E>) -> Self {
         self.release_cb = Some(cb);
 
         self
     }
 
     /// Set connection interface reset callback
-    pub fn set_reset_cb(mut self, cb: ResetCb<T, E>) -> TransmissionBuilder<T, E> {
+    pub fn set_reset_cb(mut self, cb: ResetCb<T, E>) -> Self {
         self.reset_cb = Some(cb);
 
         self
@@ -145,7 +139,7 @@ impl<T, E> TransmissionBuilder<T, E> {
     /// Build Transmission structure from setuped TransmissionBuilder
     pub fn build(self) -> Transmission<T, E> {
         Transmission {
-            atr: [0u8; ATR_SIZE],
+            t1: T1Proto::new(),
             interface: None,
             init_cb: self.init_cb,
             release_cb: self.release_cb,
@@ -163,8 +157,8 @@ impl<T, E> Default for TransmissionBuilder<T, E> {
 /// ISO7816 Transmission errors
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
-    /// Incorrect APDU command length
-    CApduLen(usize),
+    /// ISO/IEC 7816 T=1 transmission protocol context
+    T1(crate::proto::Error),
 
     /// Connection interface initialization callback error
     InitCbErr(E),
