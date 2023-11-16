@@ -112,20 +112,38 @@ impl<'a> T1Proto<'a> {
         self.nad.dev = dev_nad;
     }
 
-    pub fn reset(&mut self) -> Result<(), Error> {
+    pub fn reset<R, W, E>(&mut self, read: R, write: W) -> Result<(), Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+        W: Fn(&[u8]) -> Result<usize, E>,
+    {
         self.clear_states();
         self.need.reset = true;
 
-        self.process()
+        self.process(read, write)
     }
 
-    pub fn atr(&mut self) -> Result<&[u8], Error> {
+    pub fn atr<R, W, E>(&mut self, read: R, write: W) -> Result<&[u8], Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+        W: Fn(&[u8]) -> Result<usize, E>,
+    {
         let atr = self.atr.as_ref().ok_or(Error::NoAtr)?;
 
         Ok(atr)
     }
 
-    pub fn transmit(&mut self, capdu: &[u8], rapdu: &mut [u8]) -> Result<(), Error> {
+    pub fn transmit<R, W, E>(
+        &mut self,
+        capdu: &[u8],
+        rapdu: &mut [u8],
+        read: R,
+        write: W,
+    ) -> Result<(), Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+        W: Fn(&[u8]) -> Result<usize, E>,
+    {
         self.clear_states();
 
         Ok(())
@@ -156,13 +174,18 @@ impl<'a> T1Proto<'a> {
         }
     }
 
-    fn append_lrc8(&mut self, n: usize) -> usize {
+    fn lrc8(&mut self, n: usize) -> u8 {
         let mut c = 0u8;
 
         for it in self.buf[..n].iter() {
             c ^= it;
         }
-        self.buf[n] = c;
+
+        c
+    }
+
+    fn append_lrc8(&mut self, n: usize) -> usize {
+        self.buf[n] = self.lrc8(n);
 
         n + 1
     }
@@ -200,7 +223,7 @@ impl<'a> T1Proto<'a> {
         self.n = self.do_chk();
     }
 
-    fn request_init(&mut self) -> Result<(), Error> {
+    fn request_init<E>(&mut self) -> Result<(), Error<E>> {
         if self.state.request {
             self.write_request(0x00);
         } else if self.state.reqresp {
@@ -211,16 +234,54 @@ impl<'a> T1Proto<'a> {
             return Err(Error::NoRespIBlock);
         }
 
-        panic!("> req: {:02x?}", &self.buf[..self.n]);
+        Ok(())
+    }
+
+    fn block_recv<E>(&mut self) -> Result<(), Error<E>> {
+        // TODO
+        Ok(())
+    }
+
+    fn chk_is_good<E>(&mut self) -> Result<(), Error<E>> {
+        let n = 3 + usize::from(self.buf[2]);
+
+        match self.chk_algo {
+            ChkAlgo::LRC => {
+                if self.lrc8(n) != self.buf[n] {
+                    return Err(Error::BadCrc);
+                }
+            }
+            ChkAlgo::CRC => panic!("Unimplemented"),
+        }
 
         Ok(())
     }
 
-    fn process(&mut self) -> Result<(), Error> {
+    fn read_block<E>(&mut self) -> Result<(), Error<E>> {
+        self.block_recv()?;
+
+        if self.n < 3 {
+            return Err(Error::ReadLen(self.n));
+        } else if self.buf[0] != self.nad.card {
+            return Err(Error::ReadNad(self.buf[0]));
+        } else if self.buf[2] == 255 {
+            return Err(Error::ReadLen255);
+        }
+
+        self.chk_is_good()
+    }
+
+    fn process<R, W, E>(&mut self, read: R, write: W) -> Result<(), Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+        W: Fn(&[u8]) -> Result<usize, E>,
+    {
         self.process_init();
 
         while !self.state.halt && self.retries > 0 {
             self.request_init()?;
+            write(&self.buf[..self.n]).map_err(Error::Write)?;
+            self.read_block()?;
         }
 
         Ok(())
@@ -251,8 +312,14 @@ impl<'a> Default for T1Proto<'a> {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum Error {
+pub enum Error<E> {
     CApduLen(usize),
     NoAtr,
     NoRespIBlock,
+    Read(E),
+    Write(E),
+    ReadLen(usize),
+    ReadNad(u8),
+    ReadLen255,
+    BadCrc,
 }

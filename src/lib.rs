@@ -28,7 +28,7 @@
 
 mod proto;
 
-use crate::proto::T1Proto;
+use proto::T1Proto;
 
 type InitCb<T, E> = fn() -> Result<Option<T>, E>;
 type ReleaseCb<T, E> = fn(Option<&T>) -> Result<Option<T>, E>;
@@ -89,17 +89,32 @@ impl<'a, T, E> Transmission<'a, T, E> {
         }
 
         // Soft reset
-        self.t1.reset().map_err(Error::T1)
+        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
+        let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
+        self.t1
+            .reset(|b| read(ifc, b), |b| write(ifc, b))
+            .map_err(Error::T1)
     }
 
     /// Get Answer To Reset (ATR)
     pub fn atr(&mut self) -> Result<&[u8], Error<E>> {
-        self.t1.atr().map_err(Error::T1)
+        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
+        let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
+        self.t1
+            .atr(|b| read(ifc, b), |b| write(ifc, b))
+            .map_err(Error::T1)
     }
 
     /// Transmit APDU data and get the response
     pub fn transmit(&mut self, capdu: &[u8], rapdu: &mut [u8]) -> Result<(), Error<E>> {
-        self.t1.transmit(capdu, rapdu).map_err(Error::T1)
+        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
+        let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
+        self.t1
+            .transmit(capdu, rapdu, |b| read(ifc, b), |b| write(ifc, b))
+            .map_err(Error::T1)
     }
 
     /// Release Transmission context
@@ -213,7 +228,7 @@ impl<T, E> Default for TransmissionBuilder<T, E> {
 #[derive(Debug, PartialEq)]
 pub enum Error<E> {
     /// ISO/IEC 7816 T=1 transmission protocol context
-    T1(crate::proto::Error),
+    T1(proto::Error<E>),
 
     /// Connection interface initialization callback error
     InitCbErr(E),
@@ -226,4 +241,7 @@ pub enum Error<E> {
 
     /// NAD byte is not set
     NadNotSet,
+
+    NoReadCb,
+    NoWriteCb,
 }
