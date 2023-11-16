@@ -26,6 +26,7 @@
 
 #![no_std]
 
+mod clock;
 mod proto;
 
 use proto::T1Proto;

@@ -1,7 +1,9 @@
+use crate::clock::Clock;
+
 /// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
 const ATR_SIZE: usize = 32;
 
-/// 3 bytes header + 254 bytes data + 2 bytes CRC
+/// 3 bytes header + 254 bytes data + 2 bytes Crc
 const BUF_SIZE: usize = 3 + 255 + 2;
 
 const MAX_RETRIES: u8 = 3;
@@ -19,8 +21,8 @@ const REQUEST_WTX: u8 = 0x03;
 const REQUEST_RESET: u8 = 0x05;
 
 enum ChkAlgo {
-    LRC,
-    CRC,
+    Lrc,
+    Crc,
 }
 
 #[derive(Default)]
@@ -104,6 +106,7 @@ pub struct T1Proto<'a> {
     recv_size: usize,
     buf: [u8; BUF_SIZE],
     n: usize,
+    clock: Clock,
 }
 
 impl<'a> T1Proto<'a> {
@@ -194,8 +197,8 @@ impl<'a> T1Proto<'a> {
         let n = 3 + usize::from(self.buf[2]);
 
         match self.chk_algo {
-            ChkAlgo::LRC => self.append_lrc8(n),
-            ChkAlgo::CRC => panic!("Unimplemented"),
+            ChkAlgo::Lrc => self.append_lrc8(n),
+            ChkAlgo::Crc => panic!("Unimplemented"),
         }
     }
 
@@ -237,8 +240,67 @@ impl<'a> T1Proto<'a> {
         Ok(())
     }
 
-    fn block_recv<E>(&mut self) -> Result<(), Error<E>> {
-        // TODO
+    fn chk_algo_len(&self) -> usize {
+        match self.chk_algo {
+            ChkAlgo::Lrc => 1,
+            ChkAlgo::Crc => 2,
+        }
+    }
+
+    fn block_recv<R, E>(&mut self, read: R) -> Result<(), Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+    {
+        self.n = 0;
+
+        let bwt = self.bwt
+            * if self.wtx.wtx != 0 {
+                self.wtx.wtx.into()
+            } else {
+                1
+            };
+        self.wtx.wtx = 1;
+
+        self.clock.start(bwt);
+        loop {
+            self.clock.sleep(2);
+
+            let n = read(&mut self.buf[..1]).map_err(Error::ReadNad)?;
+            if n != 1 {
+                return Err(Error::ReadNadLen(n, 1));
+            }
+            self.n = n;
+
+            if self.buf[0] == self.nad.card {
+                break;
+            }
+
+            if self.clock.timeout() {
+                return Err(Error::Timeout(bwt));
+            }
+        }
+
+        let mut max = 2 + self.chk_algo_len();
+        let n = read(&mut self.buf[self.n..self.n + max]).map_err(Error::ReadHdr)?;
+        if n != max {
+            return Err(Error::ReadHdrLen(n, max));
+        }
+        self.n += n;
+
+        let len = usize::from(self.buf[2]);
+        max += len;
+        if max > BUF_SIZE {
+            return Err(Error::RecvLen(max, len));
+        }
+
+        if len != 0 {
+            let n = read(&mut self.buf[self.n..self.n + len]).map_err(Error::ReadData)?;
+            if n != len {
+                return Err(Error::ReadDataLen(n, len));
+            }
+            self.n += n;
+        }
+
         Ok(())
     }
 
@@ -246,24 +308,27 @@ impl<'a> T1Proto<'a> {
         let n = 3 + usize::from(self.buf[2]);
 
         match self.chk_algo {
-            ChkAlgo::LRC => {
+            ChkAlgo::Lrc => {
                 if self.lrc8(n) != self.buf[n] {
                     return Err(Error::BadCrc);
                 }
             }
-            ChkAlgo::CRC => panic!("Unimplemented"),
+            ChkAlgo::Crc => panic!("Unimplemented"),
         }
 
         Ok(())
     }
 
-    fn read_block<E>(&mut self) -> Result<(), Error<E>> {
-        self.block_recv()?;
+    fn read_block<R, E>(&mut self, read: R) -> Result<(), Error<E>>
+    where
+        R: Fn(&mut [u8]) -> Result<usize, E>,
+    {
+        self.block_recv(read)?;
 
         if self.n < 3 {
             return Err(Error::ReadLen(self.n));
         } else if self.buf[0] != self.nad.card {
-            return Err(Error::ReadNad(self.buf[0]));
+            return Err(Error::ReadNadVal(self.buf[0]));
         } else if self.buf[2] == 255 {
             return Err(Error::ReadLen255);
         }
@@ -280,8 +345,14 @@ impl<'a> T1Proto<'a> {
 
         while !self.state.halt && self.retries > 0 {
             self.request_init()?;
-            write(&self.buf[..self.n]).map_err(Error::Write)?;
-            self.read_block()?;
+            let n = write(&self.buf[..self.n]).map_err(Error::Write)?;
+            if n != self.n {
+                return Err(Error::WriteLen(self.n, n));
+            }
+
+            self.read_block(&read)?;
+
+            panic!(">>> {:02x?}", &self.buf[..self.n]); // TODO
         }
 
         Ok(())
@@ -295,7 +366,7 @@ impl<'a> Default for T1Proto<'a> {
             ifs: Ifs::default(),
             nad: Nad::default(),
             bwt: 300,
-            chk_algo: ChkAlgo::LRC,
+            chk_algo: ChkAlgo::Lrc,
             retries: MAX_RETRIES,
             request: 0xff,
             wtx: Wtx::default(),
@@ -307,6 +378,7 @@ impl<'a> Default for T1Proto<'a> {
             recv_size: 0,
             buf: [0; BUF_SIZE],
             n: 0,
+            clock: Clock::default(),
         }
     }
 }
@@ -316,10 +388,18 @@ pub enum Error<E> {
     CApduLen(usize),
     NoAtr,
     NoRespIBlock,
-    Read(E),
+    ReadNad(E),
+    ReadHdr(E),
+    ReadData(E),
     Write(E),
     ReadLen(usize),
-    ReadNad(u8),
+    ReadNadVal(u8),
     ReadLen255,
     BadCrc,
+    Timeout(u32),
+    WriteLen(usize, usize),
+    ReadNadLen(usize, usize),
+    ReadHdrLen(usize, usize),
+    ReadDataLen(usize, usize),
+    RecvLen(usize, usize),
 }
