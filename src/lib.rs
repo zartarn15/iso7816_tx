@@ -65,6 +65,9 @@ pub struct Transmission<'a, T, E> {
 
     /// NAD byte for device
     dev_nad: Option<u8>,
+
+    /// Transmission protocol context is initialized
+    inited: bool,
 }
 
 impl<'a, T, E> Transmission<'a, T, E> {
@@ -78,12 +81,15 @@ impl<'a, T, E> Transmission<'a, T, E> {
         let card_nad = self.card_nad.ok_or(Error::NadNotSet)?;
         let dev_nad = self.dev_nad.ok_or(Error::NadNotSet)?;
         self.t1.set_nad(card_nad, dev_nad);
+        self.inited = true;
 
         Ok(())
     }
 
     /// Reset Transmission protocol states
     pub fn reset(&mut self) -> Result<(), Error<E>> {
+        self.try_init()?;
+
         // Cold reset
         if let Some(cb) = self.reset_cb {
             cb(self.interface.as_ref()).map_err(Error::ResetCbErr)?
@@ -100,6 +106,8 @@ impl<'a, T, E> Transmission<'a, T, E> {
 
     /// Get Answer To Reset (ATR)
     pub fn atr(&mut self) -> Result<&[u8], Error<E>> {
+        self.try_init()?;
+
         let ifc = self.interface.as_ref(); // TODO: use tuple
         let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
         let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
@@ -109,7 +117,9 @@ impl<'a, T, E> Transmission<'a, T, E> {
     }
 
     /// Transmit APDU data and get the response
-    pub fn transmit(&mut self, capdu: &[u8], rapdu: &mut [u8]) -> Result<(), Error<E>> {
+    pub fn transmit(&mut self, capdu: &'a [u8], rapdu: &'a mut [u8]) -> Result<(), Error<E>> {
+        self.try_init()?;
+
         let ifc = self.interface.as_ref(); // TODO: use tuple
         let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
         let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
@@ -124,6 +134,16 @@ impl<'a, T, E> Transmission<'a, T, E> {
             Some(cb) => cb(self.interface.as_ref()).map_err(Error::ReleaseCbErr)?,
             None => None,
         };
+
+        self.inited = false;
+
+        Ok(())
+    }
+
+    fn try_init(&mut self) -> Result<(), Error<E>> {
+        if !self.inited {
+            self.init()?;
+        }
 
         Ok(())
     }
@@ -215,6 +235,7 @@ impl<'a, T, E> TransmissionBuilder<T, E> {
             write_cb: self.write_cb,
             card_nad: self.card_nad,
             dev_nad: self.dev_nad,
+            inited: false,
         }
     }
 }
