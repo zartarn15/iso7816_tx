@@ -7,8 +7,7 @@ const ATR_SIZE: usize = 32;
 const BUF_SIZE: usize = 3 + 255 + 2;
 
 const MAX_RETRIES: u8 = 3;
-const MAX_WTX_ROUNDS: i32 = 200;
-const MAX_WTX_VALUE: i32 = 1;
+const MAX_WTX_ROUNDS: i32 = 200; // wtx_max_rounds == MAX_WTX_ROUNDS
 const WTX_MAX_VALUE: u8 = 1;
 
 /// Maximum for extended APDU response
@@ -20,9 +19,8 @@ const REQUEST_ABORT: u8 = 0x02;
 const REQUEST_WTX: u8 = 0x03;
 const REQUEST_RESET: u8 = 0x05;
 
-enum ChkAlgo {
+pub enum ChkAlgo {
     Lrc,
-    Crc,
 }
 
 #[derive(PartialEq)]
@@ -96,13 +94,21 @@ struct Atr {
 }
 
 #[derive(Default)]
-struct Tx<'a> {
+struct Snd<'a> {
     buf: &'a [u8],
+    len: usize,
+    next: u8,
+}
+
+#[derive(Default)]
+struct Recv<'a> {
+    buf: &'a mut [u8],
+    len: usize,
     next: u8,
     size: usize,
 }
 
-pub struct T1Proto<'a> {
+pub struct T1Proto<'a, E> {
     state: State,
     ifs: Ifs,
     nad: Nad,
@@ -113,22 +119,23 @@ pub struct T1Proto<'a> {
     wtx: Wtx,
     need: Need,
     atr: Atr,
-    send: Tx<'a>,
-    recv: Tx<'a>,
+    send: Snd<'a>,
+    recv: Recv<'a>,
     recv_max: usize,
     recv_size: usize,
     buf: [u8; BUF_SIZE],
     n: usize,
     clock: Clock,
+    err: Result<(), Error<E>>,
 }
 
-impl<'a> T1Proto<'a> {
+impl<'a, E> T1Proto<'a, E> {
     pub fn set_nad(&mut self, card_nad: u8, dev_nad: u8) {
         self.nad.card = card_nad;
         self.nad.dev = dev_nad;
     }
 
-    pub fn reset<R, W, E>(&mut self, read: R, write: W) -> Result<(), Error<E>>
+    pub fn reset<R, W>(&mut self, read: R, write: W) -> Result<(), Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
         W: Fn(&[u8]) -> Result<usize, E>,
@@ -139,21 +146,25 @@ impl<'a> T1Proto<'a> {
         self.process(read, write)
     }
 
-    pub fn atr<R, W, E>(&mut self, read: R, write: W) -> Result<&[u8], Error<E>>
+    pub fn atr<R, W>(&mut self, read: R, write: W) -> Result<&[u8], Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
         W: Fn(&[u8]) -> Result<usize, E>,
     {
-        Ok(&[])
+        if self.need.reset {
+            self.reset(read, write)?;
+        }
+
+        Ok(&self.atr.buf[..self.atr.len])
     }
 
-    pub fn transmit<R, W, E>(
+    pub fn transmit<R, W>(
         &mut self,
         capdu: &'a [u8],
         rapdu: &'a mut [u8],
         read: R,
         write: W,
-    ) -> Result<(), Error<E>>
+    ) -> Result<&[u8], Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
         W: Fn(&[u8]) -> Result<usize, E>,
@@ -161,12 +172,14 @@ impl<'a> T1Proto<'a> {
         self.clear_states();
 
         self.send.buf = capdu;
+        self.send.len = capdu.len();
         self.recv.buf = rapdu;
-        self.recv.size = 0;
+        self.recv.len = 0;
+        self.recv.size = self.recv.buf.len();
 
         self.process(read, write)?;
 
-        Ok(())
+        Ok(&self.recv.buf[..self.recv.len])
     }
 
     fn clear_states(&mut self) {
@@ -174,10 +187,11 @@ impl<'a> T1Proto<'a> {
         self.wtx = Wtx::default();
         self.retries = MAX_RETRIES;
         self.request = 0xff;
-        self.send = Tx::default();
-        self.recv = Tx::default();
+        self.send = Snd::default();
+        self.recv = Recv::default();
         self.recv_size = 0;
         self.n = 0;
+        self.err = Ok(());
     }
 
     fn process_init(&mut self) {
@@ -215,7 +229,6 @@ impl<'a> T1Proto<'a> {
 
         self.n = match self.chk_algo {
             ChkAlgo::Lrc => self.append_lrc8(n),
-            ChkAlgo::Crc => todo!(),
         };
     }
 
@@ -255,8 +268,8 @@ impl<'a> T1Proto<'a> {
     }
 
     fn write_iblock(&mut self) {
-        let mut n = self.send.buf.len();
-        let mut pcb = 0u8;
+        let mut n = self.send_window_size();
+        let mut pcb: u8;
 
         if n > self.ifs.card.into() {
             n = self.ifs.card.into();
@@ -272,12 +285,12 @@ impl<'a> T1Proto<'a> {
         self.buf[0] = self.nad.dev;
         self.buf[1] = pcb;
         self.buf[2] = n.try_into().unwrap();
-        self.buf[3..self.send.buf.len() + 3].copy_from_slice(self.send.buf);
+        self.buf[3..n + 3].copy_from_slice(self.send.buf);
 
         self.do_chk();
     }
 
-    fn request_init<E>(&mut self) -> Result<(), Error<E>> {
+    fn request_init(&mut self) -> Result<(), Error<E>> {
         if self.state.request {
             self.write_request(0x00);
         } else if self.state.reqresp {
@@ -303,11 +316,10 @@ impl<'a> T1Proto<'a> {
     fn chk_algo_len(&self) -> usize {
         match self.chk_algo {
             ChkAlgo::Lrc => 1,
-            ChkAlgo::Crc => 2,
         }
     }
 
-    fn block_recv<R, E>(&mut self, read: R) -> Result<(), Error<E>>
+    fn block_recv<R>(&mut self, read: R) -> Result<(), Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
     {
@@ -364,7 +376,7 @@ impl<'a> T1Proto<'a> {
         Ok(())
     }
 
-    fn chk_is_good<E>(&mut self) -> Result<(), Error<E>> {
+    fn chk_is_good(&mut self) -> Result<(), Error<E>> {
         let n = 3 + usize::from(self.buf[2]);
 
         match self.chk_algo {
@@ -374,13 +386,12 @@ impl<'a> T1Proto<'a> {
                     return Err(Error::BadCrc(chk, self.buf[n]));
                 }
             }
-            ChkAlgo::Crc => todo!(),
         }
 
         Ok(())
     }
 
-    fn read_block<R, E>(&mut self, read: R) -> Result<(), Error<E>>
+    fn read_block<R>(&mut self, read: R) -> Result<(), Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
     {
@@ -400,11 +411,11 @@ impl<'a> T1Proto<'a> {
     fn block_kind(&mut self) -> Block {
         if self.buf[1] & 0x80 == 0 {
             return Block::I;
-        } else if self.buf[1] & 0x80 == 0 {
+        } else if self.buf[1] & 0x40 == 0 {
             return Block::R;
         }
 
-        return Block::S;
+        Block::S
     }
 
     fn parse_atr(&mut self) {
@@ -438,7 +449,7 @@ impl<'a> T1Proto<'a> {
         }
     }
 
-    fn parse_response<E>(&mut self) -> Result<bool, Error<E>> {
+    fn parse_response(&mut self) -> Result<bool, Error<E>> {
         let mut pcb = self.buf[1];
 
         if pcb & 0x20 == 0 {
@@ -479,22 +490,171 @@ impl<'a> T1Proto<'a> {
     }
 
     fn recv_window_size(&mut self) -> usize {
-        self.recv.buf.len()
+        self.recv.len
     }
 
     fn recv_window_free_size(&mut self) -> isize {
-        isize::try_from(self.recv.size).unwrap() - isize::try_from(self.recv.buf.len()).unwrap()
+        isize::try_from(self.recv.size).unwrap() - isize::try_from(self.recv.len).unwrap()
     }
 
     fn send_window_size(&mut self) -> usize {
-        self.send.buf.len()
+        self.send.len
     }
 
-    fn process<R, W, E>(&mut self, read: R, write: W) -> Result<(), Error<E>>
+    fn recv_window_append(&mut self) {
+        let free = self.recv_window_free_size();
+        let mut n = isize::from(self.buf[2]);
+
+        if n > free {
+            n = free;
+        }
+
+        if n > 0 {
+            let un = usize::try_from(n).unwrap();
+            self.recv.buf[self.recv.len..un].copy_from_slice(&self.buf[3..un + 3]);
+            self.recv.len += un;
+        }
+    }
+
+    fn close_send_window(&mut self) {
+        self.send.buf = &[];
+        self.send.len = 0;
+    }
+
+    fn close_recv_window(&mut self) {
+        self.recv.buf = &mut [];
+        self.recv.len = 0;
+        self.recv.size = 0;
+    }
+
+    fn ack_iblock(&mut self) {
+        let mut n = self.send_window_size();
+
+        if n > self.ifs.card.into() {
+            n = self.ifs.card.into();
+        }
+        self.send.buf = &self.send.buf[n..];
+        self.send.len -= n;
+
+        self.send.next ^= 1;
+    }
+
+    fn parse_iblock(&mut self) -> usize {
+        let pcb = self.buf[1];
+        let next = !!(pcb & 0x40);
+
+        if self.recv.next == next {
+            self.recv.next ^= 1;
+            self.recv_window_append();
+            self.recv_size += usize::from(self.buf[2]);
+        }
+
+        usize::from(!!(pcb & 0x20))
+    }
+
+    fn parse_rblock(&mut self) -> Result<(), Error<E>> {
+        let pcb = self.buf[1];
+        let next = !!(pcb & 0x10);
+
+        match pcb & 0x2f {
+            0 => {
+                if self.send.next ^ next != 0 {
+                    self.retries = MAX_RETRIES;
+                    self.ack_iblock();
+                } else {
+                    self.retries -= 1;
+                    if self.retries == 0 {
+                        return Err(Error::RbTimeout);
+                    }
+                }
+            }
+            1 => {
+                self.retries -= 1;
+                self.send.next = next;
+                return Err(Error::PrevBlkCrc);
+            }
+            2 => {
+                if self.state.halt {
+                    return Err(Error::RbHalt);
+                }
+            }
+            3 => {
+                self.retries -= 1;
+                self.state.request = true;
+                self.request = REQUEST_RESYNC;
+                return Err(Error::RbResync);
+            }
+            _ => {
+                self.state.halt = true;
+                return Err(Error::RbNotSupported);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_request(&mut self) -> Result<(), Error<E>> {
+        let request = self.buf[1] & 0x3f;
+
+        self.request = request;
+        match request {
+            REQUEST_RESYNC => {
+                return Err(Error::ReqResync);
+            }
+            REQUEST_IFS => {
+                if self.buf[2] != 1 {
+                    return Err(Error::ErrorBadMsg1(self.buf[2]));
+                } else if self.buf[3] == 0 || self.buf[3] == 0xFF {
+                    return Err(Error::ErrorBadMsg2(self.buf[2]));
+                } else {
+                    self.ifs.card = self.buf[3];
+                }
+            }
+            REQUEST_ABORT => {
+                if self.buf[2] == 0 {
+                    self.state.aborted = true;
+                    self.close_send_window();
+                    self.close_recv_window();
+                } else {
+                    return Err(Error::ErrorBadMsg3(self.buf[2]));
+                }
+            }
+            REQUEST_WTX => {
+                match self.buf[2] {
+                    2.. => return Err(Error::ErrorBadMsg4(self.buf[2])),
+                    1 => {
+                        self.wtx.wtx = self.buf[3];
+
+                        // if (t1->wtx_max_value) - is always true
+                        if self.wtx.wtx > WTX_MAX_VALUE {
+                            self.wtx.wtx = WTX_MAX_VALUE;
+                        }
+
+                        // if (t1->wtx_max_rounds) - is always true
+                        self.wtx.rounds -= 1;
+                        if self.wtx.rounds <= 0 {
+                            self.retries = 0;
+                            return Err(Error::NoRoundsLeft);
+                        }
+                    }
+                    0 => (),
+                }
+            }
+            _ => {}
+        }
+
+        self.state.reqresp = true;
+
+        Ok(())
+    }
+
+    fn process<R, W>(&mut self, read: R, write: W) -> Result<(), Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
         W: Fn(&[u8]) -> Result<usize, E>,
     {
+        let mut ret: Result<(), Error<E>> = Ok(());
+
         self.process_init();
 
         while !self.state.halt && self.retries > 0 {
@@ -511,15 +671,15 @@ impl<'a> T1Proto<'a> {
                     Error::Timeout(_) => self.state.timeout = true,
                     _ => self.retries = 0,
                 }
+                ret = Err(e);
 
                 continue;
             }
 
-            if self.state.badcrc {
-                if self.buf[1] & 0xef == 0x81 {
-                    self.retries -= 1;
-                    continue;
-                }
+            if self.state.badcrc && self.buf[1] & 0xef == 0x81 {
+                self.retries -= 1;
+                ret = Err(Error::StateBadCrc);
+                continue;
             }
 
             self.state.badcrc = false;
@@ -527,7 +687,7 @@ impl<'a> T1Proto<'a> {
 
             if self.state.request {
                 if self.block_kind() == Block::S {
-                    match self.parse_response::<E>() {
+                    match self.parse_response() {
                         Ok(false) => break,
 
                         Ok(true) => {
@@ -544,28 +704,60 @@ impl<'a> T1Proto<'a> {
                             }
                         }
 
-                        Err(_) => self.state.halt = true,
+                        Err(e) => {
+                            ret = Err(e);
+                            self.state.halt = true;
+                        }
                     }
 
                     continue;
                 }
 
                 self.retries -= 1;
+                ret = Err(Error::Ebade);
             } else {
                 match self.block_kind() {
-                    // TODO
-                    Block::I => (),
-                    Block::R => (),
-                    Block::S => (),
+                    Block::I => {
+                        self.retries = MAX_RETRIES;
+                        if self.send_window_size() != 0 {
+                            self.ack_iblock();
+                        }
+
+                        let n = self.parse_iblock();
+                        if self.state.aborted {
+                            continue;
+                        }
+                        if self.recv_size > self.recv_max {
+                            ret = Err(Error::RecvMsgSize(self.recv_size, self.recv_max));
+                            self.state.halt = true;
+                            continue;
+                        }
+                        if n == 0 && self.send_window_size() == 0 {
+                            self.state.halt = true;
+                        }
+                        self.wtx.rounds = MAX_WTX_ROUNDS;
+                    }
+                    Block::R => {
+                        ret = self.parse_rblock();
+                        self.wtx.rounds = MAX_WTX_ROUNDS;
+                    }
+                    Block::S => {
+                        ret = self.parse_request();
+                        match ret {
+                            Ok(()) => self.state.reqresp = true,
+                            Err(Error::NoRoundsLeft) => (),
+                            Err(_) => self.state.halt = true,
+                        }
+                    }
                 }
             }
         }
 
-        Ok(())
+        ret
     }
 }
 
-impl<'a> Default for T1Proto<'a> {
+impl<E> Default for T1Proto<'_, E> {
     fn default() -> Self {
         Self {
             state: State::default(),
@@ -578,13 +770,14 @@ impl<'a> Default for T1Proto<'a> {
             wtx: Wtx::default(),
             need: Need::default(),
             atr: Atr::default(),
-            send: Tx::default(),
-            recv: Tx::default(),
+            send: Snd::default(),
+            recv: Recv::default(),
             recv_max: RECV_MAX,
             recv_size: 0,
             buf: [0; BUF_SIZE],
             n: 0,
             clock: Clock::default(),
+            err: Ok(()),
         }
     }
 }
@@ -612,4 +805,18 @@ pub enum Error<E> {
     BadMsgIfs,
     BadMsgRst,
     NeverReq,
+    RbTimeout,
+    PrevBlkCrc,
+    RbHalt,
+    RbResync,
+    RbNotSupported,
+    ReqResync,
+    ErrorBadMsg1(u8),
+    ErrorBadMsg2(u8),
+    ErrorBadMsg3(u8),
+    ErrorBadMsg4(u8),
+    NoRoundsLeft,
+    StateBadCrc,
+    Ebade,
+    RecvMsgSize(usize, usize),
 }

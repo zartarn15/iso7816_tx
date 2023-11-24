@@ -7,10 +7,13 @@
 //! based on the provisions of the ISO/IEC 7816 family of standards
 //!
 //! # Examples
-//! ```
+//! ```no_run
 //! use iso7816_tx::TransmissionBuilder;
 //!
 //! let mut t = TransmissionBuilder::<(), ()>::new()
+//!     .set_read_cb(|_, _| Ok(0))
+//!     .set_write_cb(|_, _| Ok(0))
+//!     .set_nad(1, 2)
 //!     .build();
 //!
 //! t.init().expect("Failed to init");
@@ -19,8 +22,10 @@
 //! let atr = t.atr().expect("Failed to get ATR");
 //!
 //! let capdu = [0x80, 0xca, 0x9f, 0x7f];
-//! let mut rapdu = [0u8, 258];
-//! let rapdu = t.transmit(&capdu, &mut rapdu).expect("Failed to transmit");
+//! let mut buf = [0u8; 258];
+//! let rapdu = t.transmit(&capdu, &mut buf).expect("Failed to transmit");
+//!
+//! drop(t);
 //!
 //! ```
 
@@ -40,7 +45,7 @@ type WriteCb<T, E> = fn(Option<&T>, &[u8]) -> Result<usize, E>;
 /// Main ISO7816 Transmission API structure
 pub struct Transmission<'a, T, E> {
     /// ISO/IEC 7816 T=1 transmission protocol context
-    t1: T1Proto<'a>,
+    t1: T1Proto<'a, E>,
 
     /// Smart Card communication interface context
     interface: Option<T>,
@@ -108,7 +113,7 @@ impl<'a, T, E> Transmission<'a, T, E> {
     pub fn atr(&mut self) -> Result<&[u8], Error<E>> {
         self.try_init()?;
 
-        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let ifc = self.interface.as_ref();
         let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
         let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
         self.t1
@@ -117,10 +122,10 @@ impl<'a, T, E> Transmission<'a, T, E> {
     }
 
     /// Transmit APDU data and get the response
-    pub fn transmit(&mut self, capdu: &'a [u8], rapdu: &'a mut [u8]) -> Result<(), Error<E>> {
+    pub fn transmit(&mut self, capdu: &'a [u8], rapdu: &'a mut [u8]) -> Result<&[u8], Error<E>> {
         self.try_init()?;
 
-        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let ifc = self.interface.as_ref();
         let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
         let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
         self.t1
@@ -149,7 +154,7 @@ impl<'a, T, E> Transmission<'a, T, E> {
     }
 }
 
-impl<'a, T, E> Drop for Transmission<'a, T, E> {
+impl<T, E> Drop for Transmission<'_, T, E> {
     fn drop(&mut self) {
         self.release().unwrap_or(())
     }
@@ -166,7 +171,7 @@ pub struct TransmissionBuilder<T, E> {
     dev_nad: Option<u8>,
 }
 
-impl<'a, T, E> TransmissionBuilder<T, E> {
+impl<T, E> TransmissionBuilder<T, E> {
     /// Create new TransmissionBuilder structure
     pub fn new() -> Self {
         Self {
@@ -224,7 +229,7 @@ impl<'a, T, E> TransmissionBuilder<T, E> {
     }
 
     /// Build Transmission structure from setuped TransmissionBuilder
-    pub fn build(self) -> Transmission<'a, T, E> {
+    pub fn build<'a>(self) -> Transmission<'a, T, E> {
         Transmission {
             t1: T1Proto::default(),
             interface: None,
