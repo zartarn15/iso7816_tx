@@ -1,3 +1,9 @@
+//! ISO7816 Smart Card T=1 Transmission protocol Implementation
+//!
+//! This module based on open source Gemalto ISO7816 T1 library:
+//! https://android.googlesource.com/platform/hardware/st/secure_element2/+/refs/tags/platform-tools-30.0.4/esehal/src/iso7816_t1.c
+//!
+
 use crate::clock::Clock;
 
 /// The Answer To Reset (ATR) ISO/IEC 7816-3 maximum length
@@ -125,7 +131,7 @@ pub struct T1Proto<'a, E> {
     recv_size: usize,
     buf: [u8; BUF_SIZE],
     n: usize,
-    clock: Clock,
+    sleep_cb: fn(u32),
     err: Result<(), Error<E>>,
 }
 
@@ -133,6 +139,10 @@ impl<'a, E> T1Proto<'a, E> {
     pub fn set_nad(&mut self, card_nad: u8, dev_nad: u8) {
         self.nad.card = card_nad;
         self.nad.dev = dev_nad;
+    }
+
+    pub fn set_sleep_cb(&mut self, cb: fn(u32)) {
+        self.sleep_cb = cb;
     }
 
     pub fn reset<R, W>(&mut self, read: R, write: W) -> Result<(), Error<E>>
@@ -187,8 +197,9 @@ impl<'a, E> T1Proto<'a, E> {
         self.wtx = Wtx::default();
         self.retries = MAX_RETRIES;
         self.request = 0xff;
-        self.send = Snd::default();
-        self.recv = Recv::default();
+        self.send.len = 0;
+        self.recv.len = 0;
+        self.recv.size = 0;
         self.recv_size = 0;
         self.n = 0;
         self.err = Ok(());
@@ -333,9 +344,10 @@ impl<'a, E> T1Proto<'a, E> {
             };
         self.wtx.wtx = 1;
 
-        self.clock.start(bwt);
+        let mut clock = Clock::new(bwt, self.sleep_cb);
+
         loop {
-            self.clock.sleep(2);
+            clock.sleep(2);
 
             let n = read(&mut self.buf[..1]).map_err(Error::ReadNad)?;
             if n != 1 {
@@ -347,7 +359,7 @@ impl<'a, E> T1Proto<'a, E> {
                 break;
             }
 
-            if self.clock.timeout() {
+            if clock.timeout() {
                 return Err(Error::Timeout(bwt));
             }
         }
@@ -541,7 +553,7 @@ impl<'a, E> T1Proto<'a, E> {
 
     fn parse_iblock(&mut self) -> usize {
         let pcb = self.buf[1];
-        let next = !!(pcb & 0x40);
+        let next = Self::zero(pcb & 0x40);
 
         if self.recv.next == next {
             self.recv.next ^= 1;
@@ -549,12 +561,12 @@ impl<'a, E> T1Proto<'a, E> {
             self.recv_size += usize::from(self.buf[2]);
         }
 
-        usize::from(!!(pcb & 0x20))
+        usize::from(Self::zero(pcb & 0x20))
     }
 
     fn parse_rblock(&mut self) -> Result<(), Error<E>> {
         let pcb = self.buf[1];
-        let next = !!(pcb & 0x10);
+        let next = Self::zero(pcb & 0x10);
 
         match pcb & 0x2f {
             0 => {
@@ -688,7 +700,7 @@ impl<'a, E> T1Proto<'a, E> {
             if self.state.request {
                 if self.block_kind() == Block::S {
                     match self.parse_response() {
-                        Ok(false) => break,
+                        Ok(false) => (),
 
                         Ok(true) => {
                             self.state.request = false;
@@ -702,15 +714,15 @@ impl<'a, E> T1Proto<'a, E> {
                                 self.ifs.dev = 254;
                                 self.need.ifsd_sync = true;
                             }
+                            continue;
                         }
 
                         Err(e) => {
                             ret = Err(e);
                             self.state.halt = true;
+                            continue;
                         }
                     }
-
-                    continue;
                 }
 
                 self.retries -= 1;
@@ -755,6 +767,14 @@ impl<'a, E> T1Proto<'a, E> {
 
         ret
     }
+
+    fn zero(val: u8) -> u8 {
+        if val == 0 {
+            0
+        } else {
+            1
+        }
+    }
 }
 
 impl<E> Default for T1Proto<'_, E> {
@@ -776,7 +796,7 @@ impl<E> Default for T1Proto<'_, E> {
             recv_size: 0,
             buf: [0; BUF_SIZE],
             n: 0,
-            clock: Clock::default(),
+            sleep_cb: |_| (),
             err: Ok(()),
         }
     }

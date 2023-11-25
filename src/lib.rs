@@ -1,6 +1,6 @@
 //! ISO7816 Smart Card T=1 Transmission protocol
 //!
-//! This Library implements ISO/IEC 7816 T=1 transmission protocol in 'no_std'
+//! This Library provides ISO/IEC 7816 T=1 transmission protocol in 'no_std'
 //! environment.
 //!
 //! The T=1 protocol are commonly called the ISO protocols. They are primarily
@@ -13,6 +13,7 @@
 //! let mut t = TransmissionBuilder::<(), ()>::new()
 //!     .set_read_cb(|_, _| Ok(0))
 //!     .set_write_cb(|_, _| Ok(0))
+//!     .set_sleep_cb(|_| ())
 //!     .set_nad(1, 2)
 //!     .build();
 //!
@@ -43,6 +44,7 @@ type ReadCb<T, E> = fn(Option<&T>, &mut [u8]) -> Result<usize, E>;
 type WriteCb<T, E> = fn(Option<&T>, &[u8]) -> Result<usize, E>;
 
 /// Main ISO7816 Transmission API structure
+#[derive(Default)]
 pub struct Transmission<'a, T, E> {
     /// ISO/IEC 7816 T=1 transmission protocol context
     t1: T1Proto<'a, E>,
@@ -65,6 +67,9 @@ pub struct Transmission<'a, T, E> {
     /// Connection interface write callback
     write_cb: Option<WriteCb<T, E>>,
 
+    /// Timer sleeping callback
+    sleep_cb: Option<fn(u32)>,
+
     /// NAD byte for Smart Card
     card_nad: Option<u8>,
 
@@ -78,6 +83,10 @@ pub struct Transmission<'a, T, E> {
 impl<'a, T, E> Transmission<'a, T, E> {
     /// Initialize Transmission context
     pub fn init(&mut self) -> Result<(), Error<E>> {
+        if self.inited {
+            return Err(Error::AlreadyInited);
+        }
+
         self.interface = match self.init_cb {
             Some(cb) => cb().map_err(Error::InitCbErr)?,
             None => None,
@@ -86,6 +95,7 @@ impl<'a, T, E> Transmission<'a, T, E> {
         let card_nad = self.card_nad.ok_or(Error::NadNotSet)?;
         let dev_nad = self.dev_nad.ok_or(Error::NadNotSet)?;
         self.t1.set_nad(card_nad, dev_nad);
+        self.t1.set_sleep_cb(self.sleep_cb.ok_or(Error::NoSleepCb)?);
         self.inited = true;
 
         Ok(())
@@ -167,6 +177,7 @@ pub struct TransmissionBuilder<T, E> {
     reset_cb: Option<ResetCb<T, E>>,
     read_cb: Option<ReadCb<T, E>>,
     write_cb: Option<WriteCb<T, E>>,
+    sleep_cb: Option<fn(u32)>,
     card_nad: Option<u8>,
     dev_nad: Option<u8>,
 }
@@ -180,6 +191,7 @@ impl<T, E> TransmissionBuilder<T, E> {
             reset_cb: None,
             read_cb: None,
             write_cb: None,
+            sleep_cb: None,
             card_nad: None,
             dev_nad: None,
         }
@@ -220,6 +232,13 @@ impl<T, E> TransmissionBuilder<T, E> {
         self
     }
 
+    /// Set timer sleeping callback
+    pub fn set_sleep_cb(mut self, cb: fn(u32)) -> Self {
+        self.sleep_cb = Some(cb);
+
+        self
+    }
+
     /// Set NAD bytes for Smart Card and Device
     pub fn set_nad(mut self, card_nad: u8, dev_nad: u8) -> Self {
         self.card_nad = Some(card_nad);
@@ -238,6 +257,7 @@ impl<T, E> TransmissionBuilder<T, E> {
             reset_cb: self.reset_cb,
             read_cb: self.read_cb,
             write_cb: self.write_cb,
+            sleep_cb: self.sleep_cb,
             card_nad: self.card_nad,
             dev_nad: self.dev_nad,
             inited: false,
@@ -269,6 +289,15 @@ pub enum Error<E> {
     /// NAD byte is not set
     NadNotSet,
 
+    /// Connection interface read callback is not set
     NoReadCb,
+
+    /// Connection interface write callback is not set
     NoWriteCb,
+
+    /// Timer sleep callback is not set
+    NoSleepCb,
+
+    /// Doulble initializing method call
+    AlreadyInited,
 }
