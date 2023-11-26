@@ -30,7 +30,7 @@ fn main() {
     use iso7816_tx::TransmissionBuilder;
 
     let mut buf = [0u8; 258];
-    let mut t = TransmissionBuilder::<(), ()>::new()
+    let mut t = TransmissionBuilder::new()
         .set_init_cb(open)
         .set_release_cb(close)
         .set_reset_cb(reset)
@@ -46,43 +46,51 @@ fn main() {
     let rapdu = t.transmit(capdu, &mut buf).expect("Failed to transmit");
 }
 
-fn open() -> Result<Option<()>, ()> {
+fn open() -> Result<Option<Interface>, Error> {
     // Initialize connection interface
     // ...
 
-    Ok(Some(()))
+    Ok(Some(Interface::default()))
 }
 
-fn close(_interface: Option<&()>) -> Result<Option<()>, ()> {
+fn close(interface: Option<&Interface>) -> Result<Option<Interface>, Error> {
     // Release connection interface
     // ...
 
     Ok(None)
 }
 
-fn reset(_interface: Option<&()>) -> Result<(), ()> {
+fn reset(interface: Option<&Interface>) -> Result<(), Error> {
     // Cold reset implementation
     // ...
 
     Ok(())
 }
 
-fn read(_interface: Option<&()>, buf: &mut [u8]) -> Result<usize, ()> {
+fn read(interface: Option<&Interface>, buf: &mut [u8]) -> Result<usize, Error> {
     // Read data from connection interface
     // ...
 
     Ok(buf.len())
 }
 
-fn write(_interface: Option<&()>, buf: &[u8]) -> Result<usize, ()> {
+fn write(interface: Option<&Interface>, buf: &[u8]) -> Result<usize, Error> {
     // Write data to connection interface
     // ...
 
     Ok(buf.len())
 }
 
-fn sleep(_ms: u32) {
+fn sleep(ms: u32) {
     // Sleep implementation
     // ...
 }
+
+// Connection interface context
+#[derive(Default)]
+struct Interface{}
+
+// Interface errors
+#[derive(Debug)]
+enum Error {}
 ```
