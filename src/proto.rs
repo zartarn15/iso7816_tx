@@ -132,6 +132,7 @@ pub struct T1Proto<'a, E> {
     buf: [u8; BUF_SIZE],
     n: usize,
     sleep_cb: fn(u32),
+    soft_reset: bool,
     err: Result<(), Error<E>>,
 }
 
@@ -145,11 +146,19 @@ impl<'a, E> T1Proto<'a, E> {
         self.sleep_cb = cb;
     }
 
+    pub fn set_soft_reset(&mut self, enabled: bool) {
+        self.soft_reset = enabled;
+    }
+
     pub fn reset<R, W>(&mut self, read: R, write: W) -> Result<(), Error<E>>
     where
         R: Fn(&mut [u8]) -> Result<usize, E>,
         W: Fn(&[u8]) -> Result<usize, E>,
     {
+        if !self.soft_reset {
+            return Ok(());
+        }
+
         self.clear_states();
         self.need.reset = true;
 
@@ -667,6 +676,10 @@ impl<'a, E> T1Proto<'a, E> {
     {
         let mut ret: Result<(), Error<E>> = Ok(());
 
+        if !self.soft_reset {
+            self.need.reset = false;
+        }
+
         self.process_init();
 
         while !self.state.halt && self.retries > 0 {
@@ -797,6 +810,7 @@ impl<E> Default for T1Proto<'_, E> {
             buf: [0; BUF_SIZE],
             n: 0,
             sleep_cb: |_| (),
+            soft_reset: false,
             err: Ok(()),
         }
     }

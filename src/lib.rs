@@ -78,6 +78,9 @@ pub struct Transmission<'a, T, E> {
 
     /// Transmission protocol context is initialized
     inited: bool,
+
+    /// Enable Software reset using connection interface
+    soft_reset: bool,
 }
 
 impl<'a, T, E> Transmission<'a, T, E> {
@@ -96,6 +99,7 @@ impl<'a, T, E> Transmission<'a, T, E> {
         let dev_nad = self.dev_nad.ok_or(Error::NadNotSet)?;
         self.t1.set_nad(card_nad, dev_nad);
         self.t1.set_sleep_cb(self.sleep_cb.ok_or(Error::NoSleepCb)?);
+        self.t1.set_soft_reset(self.soft_reset);
         self.inited = true;
 
         Ok(())
@@ -111,7 +115,7 @@ impl<'a, T, E> Transmission<'a, T, E> {
         }
 
         // Soft reset
-        let ifc = self.interface.as_ref(); // TODO: use tuple
+        let ifc = self.interface.as_ref();
         let read = self.read_cb.as_ref().ok_or(Error::NoReadCb)?;
         let write = self.write_cb.as_ref().ok_or(Error::NoWriteCb)?;
         self.t1
@@ -180,6 +184,7 @@ pub struct TransmissionBuilder<T, E> {
     sleep_cb: Option<fn(u32)>,
     card_nad: Option<u8>,
     dev_nad: Option<u8>,
+    soft_reset: bool,
 }
 
 impl<T, E> TransmissionBuilder<T, E> {
@@ -194,6 +199,7 @@ impl<T, E> TransmissionBuilder<T, E> {
             sleep_cb: None,
             card_nad: None,
             dev_nad: None,
+            soft_reset: false,
         }
     }
 
@@ -247,6 +253,13 @@ impl<T, E> TransmissionBuilder<T, E> {
         self
     }
 
+    /// Enable Software reset
+    pub fn enable_soft_reset(mut self) -> Self {
+        self.soft_reset = true;
+
+        self
+    }
+
     /// Build Transmission structure from setuped TransmissionBuilder
     pub fn build<'a>(self) -> Transmission<'a, T, E> {
         Transmission {
@@ -261,6 +274,7 @@ impl<T, E> TransmissionBuilder<T, E> {
             card_nad: self.card_nad,
             dev_nad: self.dev_nad,
             inited: false,
+            soft_reset: self.soft_reset,
         }
     }
 }
