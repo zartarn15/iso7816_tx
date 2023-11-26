@@ -10,6 +10,7 @@
 //! ```no_run
 //! use iso7816_tx::TransmissionBuilder;
 //!
+//! let mut buf = [0u8; 258];
 //! let mut t = TransmissionBuilder::<(), ()>::new()
 //!     .set_read_cb(|_, _| Ok(0))
 //!     .set_write_cb(|_, _| Ok(0))
@@ -17,16 +18,10 @@
 //!     .set_nad(1, 2)
 //!     .build();
 //!
-//! t.init().expect("Failed to init");
-//! t.reset().expect("Failed to reset");
-//!
 //! let atr = t.atr().expect("Failed to get ATR");
 //!
-//! let capdu = [0x80, 0xca, 0x9f, 0x7f];
-//! let mut buf = [0u8; 258];
-//! let rapdu = t.transmit(&capdu, &mut buf).expect("Failed to transmit");
-//!
-//! drop(t);
+//! let capdu = &[0x80, 0xca, 0x9f, 0x7f];
+//! let rapdu = t.transmit(capdu, &mut buf).expect("Failed to transmit");
 //!
 //! ```
 
