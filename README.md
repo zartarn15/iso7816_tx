@@ -71,14 +71,14 @@ fn read(interface: Option<&Interface>, buf: &mut [u8]) -> Result<usize, Error> {
     // Read data from connection interface
     // ...
 
-    Ok(buf.len())
+    Ok(0)
 }
 
 fn write(interface: Option<&Interface>, buf: &[u8]) -> Result<usize, Error> {
     // Write data to connection interface
     // ...
 
-    Ok(buf.len())
+    Ok(0)
 }
 
 fn sleep(ms: u32) {
