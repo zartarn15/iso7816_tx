@@ -1,4 +1,5 @@
-use iso7816_tx::{Transmission, TransmissionBuilder};
+use hex_literal::hex;
+use iso7816_tx::{Error, Transmission, TransmissionBuilder};
 
 #[test]
 fn test_init() {
@@ -13,15 +14,65 @@ fn test_reset() {
 }
 
 #[test]
-fn test_transmit() {
-    let capdu = &[0x80, 0xca, 0x9f, 0x7f];
+fn test_transmit_apdu() {
     let mut buf = [0u8; 258];
+    let capdu = &hex!["80ca9f7f"];
+    set_resp(&hex!["1500059f7f55900035"]);
 
     let mut t = transmission();
     let rapdu = t.transmit(capdu, &mut buf).expect("Transmit failed");
 
-    assert_eq!(rapdu, &[0x9f, 0x7f, 0x55, 0x90, 0x00]);
+    assert_eq!(rapdu, &hex!["9f7f559000"]);
 }
+
+#[test]
+fn test_transmit_wrong_card_crc() {
+    let mut buf = [0u8; 258];
+    let capdu = &hex!["80ca9f7f"];
+    set_resp(&hex!["1500059f7f55900000"]);
+
+    let mut t = transmission();
+    let ret = t.transmit(capdu, &mut buf);
+
+    assert!(matches!(ret, Err(Error::T1(_))));
+}
+
+#[test]
+fn test_transmit_wrong_card_nad() {
+    let mut buf = [0u8; 258];
+    let capdu = &hex!["80ca9f7f"];
+    set_resp(&hex!["0000079f7f55900035"]);
+
+    let mut t = transmission();
+    let ret = t.transmit(capdu, &mut buf);
+
+    assert!(matches!(ret, Err(Error::T1(_))));
+}
+
+#[test]
+fn test_transmit_empty() {
+    let mut buf = [0u8; 258];
+    let capdu = &[];
+
+    let mut t = transmission();
+    let ret = t.transmit(capdu, &mut buf);
+
+    assert!(matches!(ret, Err(Error::T1(_))));
+}
+
+#[test]
+fn test_transmit_too_long() {
+    let mut buf = [0u8; 258];
+    let capdu = &[0u8; 1024];
+
+    let mut t = transmission();
+    let ret = t.transmit(capdu, &mut buf);
+
+    assert!(matches!(ret, Err(Error::T1(_))));
+}
+
+const NAD_CARD: u8 = 0x15;
+const NAD_DEV: u8 = 0x51;
 
 fn transmission<'a>() -> Transmission<'a, (), ()> {
     TransmissionBuilder::new()
@@ -36,7 +87,7 @@ fn transmission<'a>() -> Transmission<'a, (), ()> {
 }
 
 fn open() -> Result<Option<()>, ()> {
-    unsafe { READ_CNT = 0 };
+    set_cnt(0);
     Ok(Some(()))
 }
 
@@ -45,31 +96,58 @@ fn close(_interface: Option<&()>) -> Result<Option<()>, ()> {
 }
 
 fn reset(_interface: Option<&()>) -> Result<(), ()> {
-    unsafe { READ_CNT = 0 };
+    set_cnt(0);
     Ok(())
 }
 
 fn read(_interface: Option<&()>, buf: &mut [u8]) -> Result<usize, ()> {
-    let cnt = unsafe { &mut READ_CNT };
-    let resp = &[NAD_CARD, 0x00, 0x05, 0x9f, 0x7f, 0x55, 0x90, 0x00, 0x35];
+    let resp = get_resp();
+    let cnt = get_cnt();
+    let mut read_len = buf.len();
+    let mut reset_resp = false;
 
-    assert!(buf.len() < resp.len());
-    buf.copy_from_slice(&resp[*cnt..*cnt + buf.len()]);
-    *cnt += buf.len();
+    if read_len >= resp.len() - cnt {
+        read_len = resp.len() - cnt;
+        reset_resp = true;
+    }
 
-    Ok(buf.len())
+    buf[..read_len].copy_from_slice(&resp[cnt..cnt + read_len]);
+    set_cnt(cnt + read_len);
+
+    if reset_resp {
+        set_cnt(0);
+        set_resp(&[]);
+    }
+
+    Ok(read_len)
 }
 
 fn write(_interface: Option<&()>, buf: &[u8]) -> Result<usize, ()> {
-    println!("> WRITE: {:02x?}", buf);
-    assert_eq!(buf[0], NAD_DEV);
-    unsafe { READ_CNT = 0 };
+    set_cnt(0);
+    if buf[0] != NAD_DEV {
+        return Ok(0);
+    }
 
     Ok(buf.len())
 }
 
 fn sleep(_ms: u32) {}
 
-const NAD_CARD: u8 = 0x15;
-const NAD_DEV: u8 = 0x51;
+static mut RESP: &[u8] = &[];
 static mut READ_CNT: usize = 0;
+
+fn set_resp(resp: &'static [u8]) {
+    unsafe { RESP = resp };
+}
+
+fn set_cnt(cnt: usize) {
+    unsafe { READ_CNT = cnt };
+}
+
+fn get_resp() -> &'static [u8] {
+    unsafe { RESP }
+}
+
+fn get_cnt() -> usize {
+    unsafe { READ_CNT }
+}

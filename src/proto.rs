@@ -305,7 +305,7 @@ impl<'a, E> T1Proto<'a, E> {
         self.buf[0] = self.nad.dev;
         self.buf[1] = pcb;
         self.buf[2] = n.try_into().unwrap();
-        self.buf[3..n + 3].copy_from_slice(self.send.buf);
+        self.buf[3..n + 3].copy_from_slice(&self.send.buf[..n]);
 
         self.do_chk();
     }
