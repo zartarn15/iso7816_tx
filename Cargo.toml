@@ -1,10 +1,10 @@
 [package]
 name = "iso7816_tx"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Alex <zartarn15@gmail.com>"]
 categories = ["embedded", "no-std"]
-description = "SO7816 Smart Card T=1 Transmission protocol"
+description = "ISO7816 Smart Card T=1 Transmission protocol"
 keywords = ["no_std", "iso7816", "smartcard", "apdu", "t1"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zartarn15/iso7816_tx"
